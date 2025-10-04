@@ -8,8 +8,16 @@ using Microsoft.AspNetCore.Http;
 
 namespace EffSln.ApiRouting;
 
+/// <summary>
+/// Provides extension methods for registering and mapping API endpoints.
+/// </summary>
 public static class ApiRegistrationExtensions
 {
+    /// <summary>
+    /// Registers API endpoint types from the calling assembly in the service collection.
+    /// </summary>
+    /// <param name="services">The service collection to register endpoints in.</param>
+    /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddApiEndpoints(this IServiceCollection services)
     {
         var endpointTypes = Assembly.GetCallingAssembly()
@@ -26,6 +34,12 @@ public static class ApiRegistrationExtensions
         return services;
     }
 
+    /// <summary>
+    /// Maps API endpoints from the calling assembly to a route group.
+    /// </summary>
+    /// <param name="group">The route group builder to map endpoints to.</param>
+    /// <param name="serviceProvider">The service provider for resolving dependencies.</param>
+    /// <returns>The route group builder for chaining.</returns>
     public static RouteGroupBuilder MapApiEndpoints(this RouteGroupBuilder group, IServiceProvider serviceProvider)
     {
         var logger = serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(ApiRegistrationExtensions));
@@ -51,6 +65,11 @@ public static class ApiRegistrationExtensions
         return group;
     }
 
+    /// <summary>
+    /// Maps API endpoints from the calling assembly to a web application.
+    /// </summary>
+    /// <param name="app">The web application to map endpoints to.</param>
+    /// <returns>The web application for chaining.</returns>
     public static WebApplication MapApiEndpoints(this WebApplication app)
     {
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(ApiRegistrationExtensions));

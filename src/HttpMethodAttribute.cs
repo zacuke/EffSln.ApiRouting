@@ -5,7 +5,9 @@ namespace EffSln.ApiRouting;
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, Inherited = false)]
 public abstract class HttpMethodAttribute : Attribute
 {
-
+    /// <summary>
+    /// Gets the HTTP method name for the attribute.
+    /// </summary>
     public abstract string Method { get; }
 }
 
