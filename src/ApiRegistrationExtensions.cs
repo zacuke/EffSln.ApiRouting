@@ -12,7 +12,7 @@ public static class ApiRegistrationExtensions
 {
     public static IServiceCollection AddApiEndpoints(this IServiceCollection services)
     {
-        var endpointTypes = Assembly.GetExecutingAssembly()
+        var endpointTypes = Assembly.GetCallingAssembly()
             .GetTypes()
             .Where(t => t.IsClass && !t.IsAbstract &&
                 (t.GetCustomAttributes<HttpMethodAttribute>().Any() ||
@@ -30,7 +30,7 @@ public static class ApiRegistrationExtensions
     {
         var logger = serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(ApiRegistrationExtensions));
 
-        var endpointTypes = Assembly.GetExecutingAssembly()
+        var endpointTypes = Assembly.GetCallingAssembly()
             .GetTypes()
             .Where(t => t.IsClass && !t.IsAbstract &&
                 (t.GetCustomAttributes<HttpMethodAttribute>().Any() ||
@@ -55,7 +55,7 @@ public static class ApiRegistrationExtensions
     {
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(ApiRegistrationExtensions));
 
-        var endpointTypes = Assembly.GetExecutingAssembly()
+        var endpointTypes = Assembly.GetCallingAssembly()
             .GetTypes()
             .Where(t => t.IsClass && !t.IsAbstract &&
                 (t.GetCustomAttributes<HttpMethodAttribute>().Any() ||
