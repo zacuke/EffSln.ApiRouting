@@ -1,0 +1,106 @@
+name: Build, Release, and Publish
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create.outputs.upload_url }}
+      tag_name: ${{ steps.bump_tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest=$latest_tag" >> $GITHUB_OUTPUT
+
+      - name: Bump Tag
+        id: bump_tag
+        run: |
+          old="${{ steps.get_tag.outputs.latest }}"
+          base="${old#v}"
+          IFS='.' read -r major minor patch <<< "$base"
+          patch=$((patch+1))
+          new="v$major.$minor.$patch"
+          echo "tag=$new" >> $GITHUB_OUTPUT
+
+      - name: Create Git tag
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          tag="${{ steps.bump_tag.outputs.tag }}"
+          git tag "$tag"
+          git push origin "$tag"
+
+      - name: Create GitHub Release
+        id: create
+        if: success()
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.bump_tag.outputs.tag }}
+          release_name: Release ${{ steps.bump_tag.outputs.tag }}
+          draft: false
+          prerelease: false
+
+  build-and-publish:
+    needs: create-release
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 9.0.x
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --configuration Release --no-restore
+
+    - name: Test
+      run: dotnet test --configuration Release --no-build --verbosity normal
+
+    - name: Create artifacts directory
+      run: mkdir -p artifacts
+
+    - name: Pack with version
+      run: |
+        version="${{ needs.create-release.outputs.tag_name }}"
+        version=${version#v}
+        dotnet pack --configuration Release --no-build --output ./artifacts -p:Version=$version
+
+    - name: NuGet login
+      uses: NuGet/login@v1
+      id: login
+      with:
+        user: zacuke
+
+    - name: Push to NuGet
+      run: dotnet nuget push ./artifacts/*.nupkg --source https://api.nuget.org/v3/index.json --skip-duplicate --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+
+    - name: Cleanup on failure
+      if: failure()
+      run: |
+        echo "Build failed, cleaning up tag ${{ needs.create-release.outputs.tag_name }}"
+        git push --delete origin ${{ needs.create-release.outputs.tag_name }} || true

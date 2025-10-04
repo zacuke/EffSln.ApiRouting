@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EffSln.ApiRouting", "src\EffSln.ApiRouting.csproj", "{F5B12256-95FF-0BB9-2F5E-AF2A71BE7E3D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F5B12256-95FF-0BB9-2F5E-AF2A71BE7E3D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F5B12256-95FF-0BB9-2F5E-AF2A71BE7E3D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F5B12256-95FF-0BB9-2F5E-AF2A71BE7E3D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F5B12256-95FF-0BB9-2F5E-AF2A71BE7E3D}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {C6D35383-EEC9-4085-8CC4-C87F93763449}
+	EndGlobalSection
+EndGlobal
