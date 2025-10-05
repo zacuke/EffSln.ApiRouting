@@ -11,6 +11,7 @@
     <Description>Automatic API endpoint registration for ASP.NET Core</Description>
     <PackageTags>aspnetcore;api;routing;endpoints</PackageTags>
     <RepositoryUrl>https://github.com/zacuke/EffSln.ApiRouting</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
