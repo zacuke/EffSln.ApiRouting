@@ -1,10 +1,15 @@
-using System.Reflection;
-using System.IO;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.Logging;
-using Microsoft.AspNetCore.Builder;
+﻿using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Json;
+using Microsoft.AspNetCore.OpenApi;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using System.IO;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Text;
+using System.Text.Json;
 
 namespace EffSln.ApiRouting;
 
@@ -39,8 +44,8 @@ public static class ApiRegistrationExtensions
     /// </summary>
     /// <param name="group">The route group builder to map endpoints to.</param>
     /// <param name="serviceProvider">The service provider for resolving dependencies.</param>
-    /// <returns>The route group builder for chaining.</returns>
-    public static RouteGroupBuilder MapApiEndpoints(this RouteGroupBuilder group, IServiceProvider serviceProvider)
+    /// <returns>The endpoint convention builder for chaining.</returns>
+    public static IEndpointConventionBuilder MapApiEndpoints(this RouteGroupBuilder group, IServiceProvider serviceProvider)
     {
         var logger = serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(ApiRegistrationExtensions));
 
@@ -50,6 +55,8 @@ public static class ApiRegistrationExtensions
                 (t.GetCustomAttributes<HttpMethodAttribute>().Any() ||
                  t.GetMethods().Any(m => m.GetCustomAttributes<HttpMethodAttribute>().Any())));
 
+        var endpointBuilders = new List<IEndpointConventionBuilder>();
+
         foreach (var type in endpointTypes)
         {
             var (httpMethod, handlerMethod) = GetHttpMethodAndHandlerFromType(type);
@@ -58,19 +65,20 @@ public static class ApiRegistrationExtensions
             {
                 var route = GetRouteFromType(type);
                 logger.LogInformation("Registered API: {HttpMethod} {Route}", httpMethod.ToUpper(), route);
-                RegisterEndpoint(group, type, httpMethod, handlerMethod, serviceProvider);
+                var endpointBuilder = RegisterEndpoint(group, type, httpMethod, handlerMethod, serviceProvider);
+                endpointBuilders.Add(endpointBuilder);
             }
         }
 
-        return group;
+        return new CompositeEndpointConventionBuilder(endpointBuilders);
     }
 
     /// <summary>
     /// Maps API endpoints from the calling assembly to a web application.
     /// </summary>
     /// <param name="app">The web application to map endpoints to.</param>
-    /// <returns>The web application for chaining.</returns>
-    public static WebApplication MapApiEndpoints(this WebApplication app)
+    /// <returns>The endpoint convention builder for chaining.</returns>
+    public static IEndpointConventionBuilder MapApiEndpoints(this WebApplication app)
     {
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(ApiRegistrationExtensions));
 
@@ -80,6 +88,8 @@ public static class ApiRegistrationExtensions
                 (t.GetCustomAttributes<HttpMethodAttribute>().Any() ||
                  t.GetMethods().Any(m => m.GetCustomAttributes<HttpMethodAttribute>().Any())));
 
+        var endpointBuilders = new List<IEndpointConventionBuilder>();
+
         foreach (var type in endpointTypes)
         {
             var (httpMethod, handlerMethod) = GetHttpMethodAndHandlerFromType(type);
@@ -88,11 +98,12 @@ public static class ApiRegistrationExtensions
             {
                 var route = GetRouteFromType(type);
                 logger.LogInformation("Registered API: {HttpMethod} {Route}", httpMethod.ToUpper(), route);
-                RegisterEndpoint(app, type, httpMethod, handlerMethod, app.Services);
+                var endpointBuilder = RegisterEndpoint(app, type, httpMethod, handlerMethod, app.Services);
+                endpointBuilders.Add(endpointBuilder);
             }
         }
 
-        return app;
+        return new CompositeEndpointConventionBuilder(endpointBuilders);
     }
 
     private static (string? method, MethodInfo? handler) GetHttpMethodAndHandlerFromType(Type type)
@@ -101,7 +112,7 @@ public static class ApiRegistrationExtensions
 
         if (classHttpAttribute != null)
         {
-            var method = GetMethodFromAttribute(classHttpAttribute);
+            var method = classHttpAttribute.Method.ToLowerInvariant();
             var handlerMethod = GetHandlerMethod(type);
             return (method, handlerMethod);
         }
@@ -113,71 +124,193 @@ public static class ApiRegistrationExtensions
 
         if (methodHttpAttributes.Count == 1)
         {
-            var method = GetMethodFromAttribute(methodHttpAttributes[0].Attribute!);
+            var method = methodHttpAttributes[0].Attribute!.Method.ToLowerInvariant();
             return (method, methodHttpAttributes[0].Method);
         }
 
         return (null, null);
     }
 
-    private static string? GetMethodFromAttribute(Attribute attribute)
-    {
-        var attributeName = attribute.GetType().Name;
-        return attributeName switch
-        {
-            "HttpGetAttribute" => "get",
-            "HttpPostAttribute" => "post",
-            "HttpPutAttribute" => "put",
-            "HttpDeleteAttribute" => "delete",
-            "HttpPatchAttribute" => "patch",
-            "HttpOptionsAttribute" => "options",
-            "HttpHeadAttribute" => "head",
-            _ => null
-        };
-    }
 
     private static MethodInfo? GetHandlerMethod(Type type)
     {
         return type.GetMethods()
             .FirstOrDefault(m => m.Name.EndsWith("Async") && m.ReturnType == typeof(Task<IResult>));
     }
-
-    private static void RegisterEndpoint(IEndpointRouteBuilder builder, Type endpointType, string httpMethod, MethodInfo handlerMethod, IServiceProvider serviceProvider)
+    private static IEndpointConventionBuilder RegisterEndpoint(
+       IEndpointRouteBuilder builder,
+       Type endpointType,
+       string httpMethod,
+       MethodInfo handlerMethod,
+       IServiceProvider rootProvider)
     {
         var route = GetRouteFromType(endpointType);
 
-        var routeHandler = async (HttpContext context) =>
+        // Try to build a strongly‑typed delegate (needed for Swagger parameter inference)
+        Delegate? handlerDelegate = null;
+        try
         {
-            using var scope = serviceProvider.CreateScope();
-            var scopedProvider = scope.ServiceProvider;
-            var handlerInstance = scopedProvider.GetRequiredService(endpointType);
-            var args = BuildParameterArguments(handlerMethod, context, scopedProvider);
-            return await (Task<IResult>)handlerMethod.Invoke(handlerInstance, args)!;
-        };
+            // Create instance from the *root* provider just to build delegate,
+            // we won't actually use this object at runtime if it has scoped deps.
+            var tempInstance = Activator.CreateInstance(endpointType);
+            if (tempInstance != null)
+                handlerDelegate = handlerMethod.CreateDelegate(handlerMethod.ToDelegateType(), tempInstance);
+        }
+        catch
+        {
+            // Fallback later for scoped services
+            handlerDelegate = null;
+        }
 
-        switch (httpMethod)
+        IEndpointConventionBuilder endpointBuilder;
+
+        if (handlerDelegate != null)
         {
-            case "get":
-                builder.MapGet(route, routeHandler);
-                break;
-            case "post":
-                builder.MapPost(route, routeHandler);
-                break;
-            case "put":
-                builder.MapPut(route, routeHandler);
-                break;
-            case "delete":
-                builder.MapDelete(route, routeHandler);
-                break;
-            case "patch":
-                builder.MapPatch(route, routeHandler);
-                break;
-            case "options":
-                builder.MapMethods(route, new[] { "OPTIONS" }, routeHandler);
-                break;
-            case "head":
-                builder.MapMethods(route, new[] { "HEAD" }, routeHandler);
-                break;
+            // ✅ This branch gives Swagger real parameter info
+            endpointBuilder = builder.MapMethods(route, new[] { httpMethod.ToUpperInvariant() }, handlerDelegate);
+        }
+        else
+        {
+            // Fallback when we can't create delegate without DI scope
+            // ✅ This branch supports scoped constructor services
+            endpointBuilder = builder.MapMethods(route, new[] { httpMethod.ToUpperInvariant() },
+                async (HttpContext context) =>
+                {
+                    await using var scope = rootProvider.CreateAsyncScope();
+                    var scopedProvider = scope.ServiceProvider;
+                    var instance = ActivatorUtilities.CreateInstance(scopedProvider, endpointType);
+                    var args = await BuildParameterArguments(handlerMethod, context, scopedProvider);
+                    return await (Task<IResult>)handlerMethod.Invoke(instance, args)!;
+                });
+        }
+
+        AddMetadataToEndpoint(endpointBuilder, endpointType, handlerMethod);
+        return endpointBuilder;
+    }
+    private static Type ToDelegateType(this MethodInfo mi)
+    {
+        var parameterTypes = mi.GetParameters()
+            .Select(p => p.ParameterType)
+            .ToList();
+
+        parameterTypes.Add(mi.ReturnType);
+
+        // Choose Func<> or Action<> appropriately
+        if (mi.ReturnType == typeof(void))
+            return Expression.GetActionType(parameterTypes.ToArray());
+
+        return Expression.GetFuncType(parameterTypes.ToArray());
+    }
+    private static void AddMetadataToEndpoint(IEndpointConventionBuilder endpointBuilder, Type endpointType, MethodInfo handlerMethod)
+    {
+        var classAttributes = endpointType.GetCustomAttributes();
+        var methodAttributes = handlerMethod.GetCustomAttributes();
+
+        foreach (var attribute in classAttributes.Concat(methodAttributes))
+        {
+            endpointBuilder.WithMetadata(attribute);
+        }
+
+        // Add parameter metadata for OpenAPI
+        var parameters = handlerMethod.GetParameters();
+        foreach (var parameter in parameters)
+        {
+            var parameterAttributes = parameter.GetCustomAttributes();
+            foreach (var attribute in parameterAttributes)
+            {
+                endpointBuilder.WithMetadata(attribute);
+            }
+        }
+
+        if (endpointBuilder is RouteHandlerBuilder routeHandlerBuilder)
+        {
+            // Configure OpenAPI with parameter information
+            routeHandlerBuilder.WithOpenApi(operation =>
+            {
+                var parameters = handlerMethod.GetParameters();
+                foreach (var parameter in parameters)
+                {
+                    var paramName = parameter.Name ?? "";
+                    var paramType = parameter.ParameterType;
+
+                    // Skip HttpRequest and other framework types
+                    if (paramType == typeof(HttpRequest) ||
+                        paramType == typeof(HttpContext) ||
+                        paramType == typeof(CancellationToken))
+                        continue;
+
+                    // Check if parameter has FromBody attribute
+                    var hasFromBody = parameter.GetCustomAttributes(typeof(FromBodyAttribute), false).Any();
+
+                    if (hasFromBody)
+                    {
+                        // For body parameters, add request body schema
+                        operation.RequestBody = new Microsoft.OpenApi.Models.OpenApiRequestBody
+                        {
+                            Content = new Dictionary<string, Microsoft.OpenApi.Models.OpenApiMediaType>
+                            {
+                                ["application/json"] = new Microsoft.OpenApi.Models.OpenApiMediaType
+                                {
+                                    Schema = new Microsoft.OpenApi.Models.OpenApiSchema
+                                    {
+                                        Type = GetOpenApiType(paramType)
+                                    }
+                                }
+                            }
+                        };
+                    }
+                    else
+                    {
+                        // For query parameters
+                        operation.Parameters ??= new List<Microsoft.OpenApi.Models.OpenApiParameter>();
+                        operation.Parameters.Add(new Microsoft.OpenApi.Models.OpenApiParameter
+                        {
+                            Name = paramName,
+                            In = Microsoft.OpenApi.Models.ParameterLocation.Query,
+                            Schema = new Microsoft.OpenApi.Models.OpenApiSchema
+                            {
+                                Type = GetOpenApiType(paramType)
+                            }
+                        });
+                    }
+                }
+
+                return operation;
+            });
+        }
+    }
+
+    private static string GetOpenApiType(Type type)
+    {
+        if (type == typeof(string))
+            return "string";
+        if (type == typeof(bool))
+            return "boolean";
+        if (type == typeof(int) || type == typeof(long) || type == typeof(short) || type == typeof(byte))
+            return "integer";
+        if (type == typeof(float) || type == typeof(double) || type == typeof(decimal))
+            return "number";
+        if (type.IsArray || (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>)))
+            return "array";
+
+        return "object";
+    }
+
+    private class CompositeEndpointConventionBuilder : IEndpointConventionBuilder
+    {
+        private readonly List<IEndpointConventionBuilder> _builders;
+
+        public CompositeEndpointConventionBuilder(List<IEndpointConventionBuilder> builders)
+        {
+            _builders = builders;
+        }
+
+        public void Add(Action<EndpointBuilder> convention)
+        {
+            foreach (var builder in _builders)
+            {
+                builder.Add(convention);
+            }
         }
     }
 
@@ -270,7 +403,7 @@ public static class ApiRegistrationExtensions
         return route.ToLowerInvariant();
     }
 
-    private static object[] BuildParameterArguments(MethodInfo method, HttpContext context, IServiceProvider provider)
+    private static async Task<object[]> BuildParameterArguments(MethodInfo method, HttpContext context, IServiceProvider provider)
     {
         var parameters = method.GetParameters();
         var args = new object[parameters.Length];
@@ -278,17 +411,46 @@ public static class ApiRegistrationExtensions
         for (var i = 0; i < parameters.Length; i++)
         {
             var param = parameters[i];
-            args[i] = GetParameterValue(param, context, provider);
+            args[i] = await GetParameterValue(param, context, provider, method);
         }
 
         return args;
     }
 
-    private static object GetParameterValue(ParameterInfo param, HttpContext context, IServiceProvider provider)
+    private static async Task<object> GetParameterValue(ParameterInfo param, HttpContext context, IServiceProvider provider, MethodInfo method)
     {
         var paramType = param.ParameterType;
         var paramName = param.Name ?? "";
 
+        // Check if this parameter has [FromBody] attribute
+        var hasFromBody = param.GetCustomAttributes(typeof(FromBodyAttribute), false).Any();
+
+        // For backward compatibility, also check method-level [FromBody]
+        var methodHasFromBody = method.GetCustomAttributes(typeof(FromBodyAttribute), false).Any();
+
+        if (hasFromBody || methodHasFromBody)
+        {
+            if (context.Request.HasJsonContentType() &&
+                (context.Request.Method == "POST" || context.Request.Method == "PUT" || context.Request.Method == "PATCH"))
+            {
+                try
+                {
+                    // Get or create cached body
+                    var body = await GetCachedRequestBody(context, provider);
+                    if (body != null && body.TryGetValue(paramName, out var property))
+                    {
+                        return ConvertJsonElementToType(property, paramType, param);
+                    }
+                }
+                catch(Exception ex)
+                {
+                    Console.WriteLine(ex.ToString());
+                    // Fall through to other binding methods
+                }
+            }
+        }
+
+        // Fall back to URL parameter binding
         if (paramType == typeof(string))
         {
             var value = context.Request.Query[paramName].FirstOrDefault();
@@ -303,7 +465,8 @@ public static class ApiRegistrationExtensions
 
         if (paramType == typeof(string[]))
         {
-            return context.Request.Query[paramName].ToArray();
+            var values = context.Request.Query[paramName];
+            return values.Count > 0 ? values.ToArray() : Array.Empty<string>();
         }
 
         if (paramType == typeof(HttpRequest))
@@ -312,5 +475,60 @@ public static class ApiRegistrationExtensions
         }
 
         return provider.GetRequiredService(paramType);
+    }
+
+    private static async Task<Dictionary<string, JsonElement>?> GetCachedRequestBody(HttpContext context, IServiceProvider provider)
+    {
+        const string cacheKey = "__CachedRequestBody__";
+
+        if (context.Items.TryGetValue(cacheKey, out var cachedBody))
+        {
+            return cachedBody as Dictionary<string, JsonElement>;
+        }
+
+        context.Request.EnableBuffering();
+
+        // Read the raw body as text
+        using var reader = new StreamReader(context.Request.Body, Encoding.UTF8, leaveOpen: true);
+        var bodyText = await reader.ReadToEndAsync();
+
+        // Reset position so ReadFromJsonAsync can read it again
+        context.Request.Body.Position = 0;
+
+        // Deserialize entire JSON body
+        var jsonOptions = provider.GetService<JsonOptions>();
+        var body = await context.Request.ReadFromJsonAsync<Dictionary<string, JsonElement>>(jsonOptions?.SerializerOptions);
+
+        // Cache the body for subsequent parameter bindings
+        context.Items[cacheKey] = body;
+
+        return body;
+    }
+
+    private static object ConvertJsonElementToType(JsonElement property, Type paramType, ParameterInfo param)
+    {
+        if (paramType == typeof(string) && property.ValueKind == JsonValueKind.String)
+            return property.GetString() ?? (param.HasDefaultValue ? param.DefaultValue! : null!);
+
+        if (paramType == typeof(bool) && (property.ValueKind == JsonValueKind.True || property.ValueKind == JsonValueKind.False))
+            return property.GetBoolean();
+
+        if (paramType == typeof(string[]) && property.ValueKind == JsonValueKind.Array)
+        {
+            var arr = property.EnumerateArray();
+            var mid = arr.Select(e => e.GetString() ?? string.Empty);
+            return mid.ToArray();
+        }
+
+        // For other types, try to deserialize directly
+        try
+        {
+            return JsonSerializer.Deserialize(property.GetRawText(), paramType) ??
+                   (param.HasDefaultValue ? param.DefaultValue! : null!);
+        }
+        catch
+        {
+            return param.HasDefaultValue ? param.DefaultValue! : null!;
+        }
     }
 }
