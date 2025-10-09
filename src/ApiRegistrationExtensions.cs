@@ -135,7 +135,11 @@ public static class ApiRegistrationExtensions
     private static MethodInfo? GetHandlerMethod(Type type)
     {
         return type.GetMethods()
-            .FirstOrDefault(m => m.Name.EndsWith("Async") && m.ReturnType == typeof(Task<IResult>));
+            .FirstOrDefault(m => m.Name.EndsWith("Async") &&
+                (m.ReturnType == typeof(Task<IResult>) ||
+                 (m.ReturnType.IsGenericType &&
+                  m.ReturnType.GetGenericTypeDefinition() == typeof(Task<>) &&
+                  m.ReturnType.GetGenericArguments()[0].Name.StartsWith("Results`"))));
     }
     private static IEndpointConventionBuilder RegisterEndpoint(
        IEndpointRouteBuilder builder,
@@ -180,7 +184,8 @@ public static class ApiRegistrationExtensions
                     var scopedProvider = scope.ServiceProvider;
                     var instance = ActivatorUtilities.CreateInstance(scopedProvider, endpointType);
                     var args = await BuildParameterArguments(handlerMethod, context, scopedProvider);
-                    return await (Task<IResult>)handlerMethod.Invoke(instance, args)!;
+                    var result = await (dynamic)handlerMethod.Invoke(instance, args)!;
+                    return (IResult)result;
                 });
         }
 
