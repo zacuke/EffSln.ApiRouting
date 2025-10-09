@@ -63,24 +63,24 @@ public static class ApiRegistrationExtensions
 
             if (httpMethod != null && handlerMethod != null)
             {
-                var route = GetRouteFromType(type);
-                logger.LogInformation("Registered API: {HttpMethod} {Route}", httpMethod.ToUpper(), route);
-                var endpointBuilder = RegisterEndpoint(group, type, httpMethod, handlerMethod, serviceProvider);
-                endpointBuilders.Add(endpointBuilder);
-            }
+            var route = GetRouteFromType(type);
+            logger.LogInformation("Registered API: {HttpMethod} {Route}", httpMethod.ToUpper(), route);
+            var endpointBuilder = RegisterEndpoint(group, type, httpMethod, handlerMethod, serviceProvider);
+            endpointBuilders.Add(endpointBuilder);
+        }
         }
 
         return new CompositeEndpointConventionBuilder(endpointBuilders);
     }
 
     /// <summary>
-    /// Maps API endpoints from the calling assembly to a web application.
+    /// Maps API endpoints from the calling assembly to an <see cref="IEndpointRouteBuilder"/>.
+    /// Works inside UseEndpoints(...) or directly on WebApplication.
     /// </summary>
-    /// <param name="app">The web application to map endpoints to.</param>
-    /// <returns>The endpoint convention builder for chaining.</returns>
-    public static IEndpointConventionBuilder MapApiEndpoints(this WebApplication app)
+    public static IEndpointConventionBuilder MapApiEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(ApiRegistrationExtensions));
+        var services = endpoints.ServiceProvider ?? throw new InvalidOperationException("No ServiceProvider on IEndpointRouteBuilder");
+        var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(ApiRegistrationExtensions));
 
         var endpointTypes = Assembly.GetCallingAssembly()
             .GetTypes()
@@ -93,12 +93,12 @@ public static class ApiRegistrationExtensions
         foreach (var type in endpointTypes)
         {
             var (httpMethod, handlerMethod) = GetHttpMethodAndHandlerFromType(type);
-
+ 
             if (httpMethod != null && handlerMethod != null)
             {
                 var route = GetRouteFromType(type);
                 logger.LogInformation("Registered API: {HttpMethod} {Route}", httpMethod.ToUpper(), route);
-                var endpointBuilder = RegisterEndpoint(app, type, httpMethod, handlerMethod, app.Services);
+                var endpointBuilder = RegisterEndpoint(endpoints, type, httpMethod, handlerMethod, services);
                 endpointBuilders.Add(endpointBuilder);
             }
         }
@@ -142,11 +142,11 @@ public static class ApiRegistrationExtensions
                   m.ReturnType.GetGenericArguments()[0].Name.StartsWith("Results`"))));
     }
     private static IEndpointConventionBuilder RegisterEndpoint(
-       IEndpointRouteBuilder builder,
-       Type endpointType,
-       string httpMethod,
-       MethodInfo handlerMethod,
-       IServiceProvider rootProvider)
+        IEndpointRouteBuilder builder,
+        Type endpointType,
+        string httpMethod,
+        MethodInfo handlerMethod,
+        IServiceProvider rootProvider)
     {
         var route = GetRouteFromType(endpointType);
 
